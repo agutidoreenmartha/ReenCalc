@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReenCalc Scientific</title>
+
+<style>
+  /*Colors*/
+  :root {
+    --bg: #f8f6eb;
+    --screen: #fefff2;
+    --text: #1d1d1b;
+    --muted: #6b6a64;
+    --key: #f3bc30;
+    --fn-key: #f8daa3;
+    --accent: #d9731a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413;
+      --screen: #1f1f1d;
+      --text: #f1f0ea;
+      --muted: #9a988f;
+      --key: #2b2a27;
+      --fn-key: #354426;
+      --accent: #d9731a;
+    }
+  }
+
+  /*Layout*/
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Arial, sans-serif;
+  }
+  main { max-width: 420px; margin: 0 auto; padding: 16px 12px; }
+
+  .top { display: flex; justify-content: space-between; align-items: center; }
+  h1 { font-size: 1.2rem; }
+
+  #mode-button {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--muted);
+    background: var(--screen);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .screen {
+    background: var(--screen);
+    border-radius: 12px;
+    padding: 12px;
+    margin: 10px 0;
+    text-align: right;
+    min-height: 100px;
+  }
+  #expression-line { color: var(--muted); font-size: 1.1rem; min-height: 2.5em; word-break: break-all; }
+  #result-line { font-size: 2.2rem; font-weight: bold; overflow-x: auto; }
+
+  /* The keypad is a grid with 5 columns */
+  #keypad { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .key {
+    padding: 14px 0;
+    font-size: 1.2rem;
+    font-weight: bold;
+    border: none;
+    border-radius: 10px;
+    background: var(--key);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .key.function { background: var(--fn-key); }
+  .key.equals { background: var(--accent); color: white; font-weight: bold; }
+  .key {font-size: 1.4rem;}
+  .key.equals { color: #1d1d1b;}
+  .key.symbol {font-size: 2rem; font-weight: bold; font-family: 'Courier New', Courier, monospace; padding: 4px 0; color: #000;}
+  .key.equals {font-size: 2rem; padding: 4px 0; color: #000;}
+</style>
+</head>
+
+<body>
+<main>
+  <div class="top">
+    <h1>ReenCalc Scientific</h1>
+    <button id="mode-button">DEG</button>
+  </div>
+
+  <div class="screen">
+    <div id="expression-line"></div>
+    <div id="result-line">0</div>
+  </div>
+
+  <div id="keypad"></div>
+</main>
+
+<script>
+
+/*VARIABLES THAT THE CALCULATOR REMEMBERS*/
+
+let expression = "";        /*what the user has typed so far*/
+let lastAnswer = 0;         /*used by the "ans" key*/
+let useDegrees = true;      /*true = DEG mode, false = RAD mode*/
+let justCalculated = false; /*true right after pressing "="*/
+
+
+
+/*THE BUTTONS*/
+
+const buttons = [
+  ["sin", "sin(", "function"], ["cos", "cos(", "function"], ["tan", "tan(", "function"], ["ln", "ln(", "function"], ["log", "log(", "function"],
+  ["asin", "asin(", "function"], ["acos", "acos(", "function"], ["atan", "atan(", "function"], ["sqrt", "sqrt(", "function"], ["n!", "!", "function"],
+  ["pi", "pi", "function"], ["e", "e", "function"], ["(", "(", "function"], [")", ")", "function"], ["x^y", "^", "function"],
+  ["7", "7", ""], ["8", "8", ""], ["9", "9", ""], ["/", "/", "symbol"], ["AC", "AC", ""],
+  ["4", "4", ""], ["5", "5", ""], ["6", "6", ""], ["*", "*", "symbol"], ["DEL", "DEL", ""],
+  ["1", "1", ""], ["2", "2", ""], ["3", "3", ""], ["-", "-", "symbol"], ["ans", "ans", ""],
+  ["0", "0", ""], [".", ".", "symbol"], ["%", "%", ""], ["+", "+", "symbol"], ["=", "=", "equals"]
+];
+
+/*Build the buttons on the page using a loop*/
+const keypad = document.getElementById("keypad");
+for (let i = 0; i < buttons.length; i++) {
+  const label = buttons[i][0];
+  const typed = buttons[i][1];
+  const style = buttons[i][2];
+
+  const btn = document.createElement("button");
+  btn.textContent = label;
+  btn.className = "key " + style;
+  btn.onclick = function () { pressKey(typed); };
+  keypad.appendChild(btn);
+}
+
+
+
+/*TOKENIZER*/
+/*Breaks "2+sin(30)" into pieces: ["2", "+", "sin", "(", "30", ")"]*/
+function isDigit(ch) {
+  return ch >= "0" && ch <= "9";
+}
+
+function isLetter(ch) {
+  return ch >= "a" && ch <= "z";
+}
+
+function tokenize(text) {
+  const tokens = [];
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (ch === " ") {
+      i++;                                   
+    } else if (isDigit(ch) || ch === ".") {
+      let number = "";                       /*collect a whole number like 12.5*/
+      while (i < text.length && (isDigit(text[i]) || text[i] === ".")) {
+        number += text[i];
+        i++;
+      }
+      tokens.push(number);
+    } else if (isLetter(ch)) {
+      let word = "";                         /*collect a word like sin*/
+      while (i < text.length && isLetter(text[i])) {
+        word += text[i];
+        i++;
+      }
+      tokens.push(word);
+    } else if ("+-*/^()!%".includes(ch)) {
+      tokens.push(ch);                       /*single symbols*/
+      i++;
+    } else {
+      throw new Error("Unknown character");
+    }
+  }
+  return tokens;
+}
+
+/*PARSER*/
+/*Works out the answer while respecting the order of operations*/
+
+let tokens = [];   /*the pieces we are reading*/
+let pos = 0;       /*which piece we are looking at*/
+
+function peek() { return tokens[pos]; }        /*look at current piece*/
+function next() { pos++; return tokens[pos - 1]; }  /*take current piece and move on*/
+
+/*Level 1: + and -*/
+function parseAddSubtract() {
+  let result = parseMultiplyDivide();
+  while (peek() === "+" || peek() === "-") {
+    const op = next();
+    const right = parseMultiplyDivide();
+    if (op === "+") result = result + right;
+    else result = result - right;
+  }
+  return result;
+}
+
+
+function startsValue(piece) {
+  if (piece === undefined) return false;
+  const first = piece[0];
+  return isDigit(first) || first === "." || isLetter(first) || first === "(";
+}
+
+
+function parseMultiplyDivide() {
+  let result = parseSign();
+  while (true) {
+    if (peek() === "*") {
+      next();
+      result = result * parseSign();
+    } else if (peek() === "/") {
+      next();
+      result = result / parseSign();
+    } else if (startsValue(peek())) {
+      result = result * parseSign();         /*invisible multiplication*/
+    } else {
+      break;
+    }
+  }
+  return result;
+}
+
+
+function parseSign() {
+  if (peek() === "-") { next(); return -parseSign(); }
+  if (peek() === "+") { next(); return parseSign(); }
+  return parsePower();
+}
+
+
+function parsePower() {
+  const base = parseFactorialPercent();
+  if (peek() === "^") {
+    next();
+    const exponent = parseSign();            
+    return Math.pow(base, exponent);
+  }
+  return base;
+}
+
+
+function parseFactorialPercent() {
+  let value = parseBasic();
+  while (peek() === "!" || peek() === "%") {
+    const symbol = next();
+    if (symbol === "!") value = factorial(value);
+    else value = value / 100;
+  }
+  return value;
+}
+
+
+function parseBasic() {
+  const piece = next();
+
+  if (piece === undefined) throw new Error("Unexpected end");
+
+  /*a number*/
+  if (isDigit(piece[0]) || piece[0] === ".") {
+    const number = parseFloat(piece);
+    if (isNaN(number)) throw new Error("Bad number");
+    return number;
+  }
+
+  /*a bracket*/
+  if (piece === "(") {
+    const inside = parseAddSubtract();
+    if (next() !== ")") throw new Error("Missing )");
+    return inside;
+  }
+
+  /*constants*/
+  if (piece === "pi") return Math.PI;
+  if (piece === "e") return Math.E;
+  if (piece === "ans") return lastAnswer;
+
+  /*functions like sin(30)*/
+  if (peek() === "(") {
+    next();                                  
+    const inside = parseAddSubtract();
+    if (next() !== ")") throw new Error("Missing )");
+    return callFunction(piece, inside);
+  }
+
+  throw new Error("Unknown word: " + piece);
+}
+
+
+
+/*MATH HELPERS*/
+
+function factorial(n) {
+  if (n < 0 || n !== Math.floor(n) || n > 170) throw new Error("Bad factorial");
+  let result = 1;
+  for (let i = 2; i <= n; i++) {
+    result = result * i;
+  }
+  return result;
+}
+
+function toRadians(x) {
+  if (useDegrees) return x * Math.PI / 180;
+  return x;
+}
+
+function fromRadians(x) {
+  if (useDegrees) return x * 180 / Math.PI;
+  return x;
+}
+
+function callFunction(name, x) {
+  if (name === "sin") return Math.sin(toRadians(x));
+  if (name === "cos") return Math.cos(toRadians(x));
+  if (name === "tan") return Math.tan(toRadians(x));
+  if (name === "asin") return fromRadians(Math.asin(x));
+  if (name === "acos") return fromRadians(Math.acos(x));
+  if (name === "atan") return fromRadians(Math.atan(x));
+  if (name === "ln") return Math.log(x);
+  if (name === "log") return Math.log10(x);
+  if (name === "sqrt") return Math.sqrt(x);
+  throw new Error("Unknown function: " + name);
+}
+
+
+
+/*CALCULATE AND SHOW RESULTS*/
+function calculate(text) {
+  let openBrackets = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") openBrackets++;
+    if (text[i] === ")") openBrackets--;
+  }
+  for (let i = 0; i < openBrackets; i++) {
+    text = text + ")";
+  }
+
+  tokens = tokenize(text);
+  pos = 0;
+  const answer = parseAddSubtract();
+
+  if (pos < tokens.length) throw new Error("Extra input");
+  if (!isFinite(answer)) throw new Error("Not a number");
+  return answer;
+}
+
+/*Clean up tiny rounding errors, e.g. 0.1 + 0.2 = 0.30000000000000004*/
+function formatNumber(value) {
+  if (Math.abs(value) < 1e-12) return "0";
+  return String(parseFloat(value.toPrecision(12)));
+}
+
+function updateScreen() {
+  document.getElementById("expression-line").textContent = expression;
+
+  if (expression === "") {
+    document.getElementById("result-line").textContent = "0";
+    return;
+  }
+  try {
+    document.getElementById("result-line").textContent = formatNumber(calculate(expression));
+  } catch (error) {
+    /*while the user is still typing, the expression may be unfinished: do nothing*/
+  }
+}
+
+
+
+/*WHAT HAPPENS WHEN A KEY IS PRESSED*/
+function pressKey(key) {
+  if (key === "AC") {
+    expression = "";
+    justCalculated = false;
+    updateScreen();
+    return;
+  }
+
+  if (key === "DEL") {
+    expression = expression.slice(0, -1);    /*remove the last character*/
+    updateScreen();
+    return;
+  }
+
+  if (key === "=") {
+    if (expression === "") return;
+    try {
+      const answer = calculate(expression);
+      lastAnswer = answer;
+      document.getElementById("expression-line").textContent = expression + " =";
+      document.getElementById("result-line").textContent = formatNumber(answer);
+      expression = formatNumber(answer);
+      justCalculated = true;
+    } catch (error) {
+      document.getElementById("result-line").textContent = "Error";
+    }
+    return;
+  }
+
+  /*After "=", typing a number or function starts a fresh calculation.*/
+  /*Typing an operator (+ - * / ^) continues from the answer.*/
+  if (justCalculated) {
+    justCalculated = false;
+    const operators = "+-*/^%!)";
+    if (!operators.includes(key[0])) {
+      expression = "";
+    }
+  }
+
+  expression = expression + key;
+  updateScreen();
+}
+
+
+
+/*DEG / RAD BUTTON*/
+
+document.getElementById("mode-button").onclick = function () {
+  useDegrees = !useDegrees;
+  this.textContent = useDegrees ? "DEG" : "RAD";
+  updateScreen();
+};
+
+
+
+/*KEYBOARD SUPPORT*/
+
+document.addEventListener("keydown", function (event) {
+  const key = event.key;
+
+  if (key === "Enter") { event.preventDefault(); pressKey("="); }
+  else if (key === "Backspace") { pressKey("DEL"); }
+  else if (key === "Escape") { pressKey("AC"); }
+  else if (key.length === 1 && "0123456789.+-*/^()!%".includes(key)) {
+    event.preventDefault();
+    pressKey(key);
+  }
+  else if (key.length === 1 && isLetter(key)) {
+    pressKey(key);                           
+  }
+});
+</script>
+</body>
+</html>
